@@ -81,8 +81,8 @@ ast_node(Node={Type, _, _, _}) ->
 			comment_line -> comment_line(Node);
 			_ -> ast_error({unknown_type, Node})
 		end
-	catch C:E ->
-		ast_error({crash, C, E, erlang:get_stacktrace(), Node})
+	catch C:E:S ->
+		ast_error({crash, C, E, S, Node})
 	end.
 
 ast_error(Error) ->
@@ -124,7 +124,7 @@ paragraph({paragraph, _, Text, _}) ->
 listing_block({listing_block, Attrs, Listing0, _}) ->
 	Listing = case Attrs of
 		#{1 := <<"source">>, 2 := _} ->
-			try asciideck_source_highlight:filter(Listing0, Attrs) catch C:E -> io:format("~p ~p ~p~n", [C, E, erlang:get_stacktrace()]), exit(bad) end;
+			try asciideck_source_highlight:filter(Listing0, Attrs) catch C:E:S -> io:format("~p ~p ~p~n", [C, E, S]), exit(bad) end;
 		_ ->
 			["<pre>", html_encode(Listing0), "</pre>"]
 	end,

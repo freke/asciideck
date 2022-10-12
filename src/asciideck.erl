@@ -38,21 +38,22 @@ parse_file(Filename) ->
 
 parse_file(Filename, St) ->
 	{ok, File} = file:read_file(Filename),
-	parse(File, St#{infile => filename:absname(Filename)}).
+	parse(File, St#{source => filename:absname(Filename)}).
 
 parse(Data) ->
 	parse(Data, #{}).
 
-parse(Data, _St) ->
+parse(Data, St) ->
 	Passes = [
 		asciideck_attributes_pass,
 		asciideck_transform_pass,
 		asciideck_lists_pass,
 		asciideck_tables_pass,
+		asciideck_paragraph_pass,
 		asciideck_inline_pass
 	],
 	lists:foldl(fun(M, AST) -> M:run(AST) end,
-		asciideck_block_parser:parse(Data), Passes).
+		asciideck_block_parser:parse(Data, St), Passes).
 
 to_html(AST) ->
 	asciideck_to_html:translate(AST, #{}).

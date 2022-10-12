@@ -1,4 +1,4 @@
-%% Copyright (c) 2018, Loïc Hoguin <essen@ninenines.eu>
+%% Copyright (c) 2017-2018, David AAberg <davabe@hotmail.com>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -12,26 +12,12 @@
 %% ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 %% OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
--module(asciideck_reader).
+-module(asciideck_pre_parser).
 
--export([read_line/1]).
--export([get_position/1]).
--export([set_position/2]).
--export([get_file/1]).
+-export([parse/2]).
 
--spec read_line(pid()) -> {binary(), map()} | {eof, map()}.
-read_line(Pid) ->
-	gen_server:call(Pid, read_line).
-
-%% @todo peek_line
-
--spec get_position(pid()) -> pos_integer().
-get_position(Pid) ->
-	gen_server:call(Pid, get_position).
-
--spec set_position(pid(), pos_integer()) -> ok.
-set_position(Pid, Pos) ->
-	gen_server:cast(Pid, {set_position, Pos}).
-
-get_file(Pid) ->
-	gen_server:call(Pid, get_file).
+parse(Data, Ann) ->
+    Source = maps:get(source, Ann, <<"">>),
+	Lines0 = binary:split(Data, <<"\n">>, [global]),
+	{Lines, _NumLines} = lists:mapfoldl(fun (L, A) -> {{L,#{source=>Source, line=>A}}, A+1} end, 1, Lines0),
+    {ok, Lines}.

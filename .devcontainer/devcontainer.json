@@ -1,0 +1,16 @@
+{
+	"name": "Erlang",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"args": { "VARIANT": "latest" }
+	},
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"pgourlain.erlang"
+//				"erlang-ls.erlang-ls"
+			]
+		}
+	}
+}

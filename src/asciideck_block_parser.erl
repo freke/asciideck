@@ -25,7 +25,7 @@
 %% of individual table cells.
 -module(asciideck_block_parser).
 
--export([parse/1]).
+-export([parse/2]).
 
 %% @todo Temporary export. Move somewhere else.
 -export([trim/1]).
@@ -45,26 +45,27 @@
 
 define_NOT_test() ->
 	%% This succeeds.
-	?NOT(block_id, parse(<<"[[block,id]]">>)),
+	?NOT(block_id, parse(<<"[[block,id]]">>, #{})),
 	%% This fails.
-	{'EXIT', _} = (catch ?NOT(block_id, parse(<<"[[block_id]]">>))),
+	{'EXIT', _} = (catch ?NOT(block_id, parse(<<"[[block_id]]">>, #{}))),
 	ok.
 -endif.
 
--spec parse(binary() | pid()) -> ast().
-parse(Data) when is_binary(Data) ->
+-spec parse(binary() | pid(), map()) -> ast().
+parse(Data, Ann) when is_binary(Data) ->
 	%% @todo Might want to start it supervised.
 	%% @todo Might want to stop it also.
-	{ok, ReaderPid} = asciideck_line_reader:start_link(Data),
-	parse(ReaderPid);
-parse(Data) when is_list(Data) ->
-	parse(iolist_to_binary(Data));
-parse(ReaderPid) when is_pid(ReaderPid) ->
+	{ok, Lines} = asciideck_pre_parser:parse(Data, Ann),
+	{ok, ReaderPid} = asciideck_line_reader:start_link(Lines),
+	parse(ReaderPid, Ann);
+parse(Data, Ann) when is_list(Data) ->
+	parse(iolist_to_binary(Data), Ann);
+parse(ReaderPid, _Ann) when is_pid(ReaderPid) ->
 	blocks(#state{reader=ReaderPid}).
 
 blocks(St) ->
 	case block(St) of
-		eof -> [];
+		{eof,_} -> [];
 		Block -> [Block|blocks(St)]
 	end.
 
@@ -111,15 +112,16 @@ block(St) ->
 	], St).
 
 eof(St) ->
-	eof = read_line(St).
+	{eof, _} = read_line(St).
 
 -ifdef(TEST).
 eof_test() ->
-	[] = parse(<<>>).
+	[] = parse(<<>>, #{}).
 -endif.
 
 empty_line(St) ->
-	<<>> = trim(read_line(St)).
+	{L,_} = read_line(St),
+	<<>> = trim(L).
 
 -ifdef(TEST).
 empty_line_test() ->
@@ -128,19 +130,18 @@ empty_line_test() ->
 		"           \n"
 		"			\n"
 		"\n"
-	>>).
+	>>, #{}).
 -endif.
 
 %% Asciidoc User Guide 11.2
 section_title(St) ->
-	{Level, Title0} = case read_line(St) of
-		<<"=", C, R/bits>> when ?IS_WS(C) -> {0, R};
-		<<"==", C, R/bits>> when ?IS_WS(C) -> {1, R};
-		<<"===", C, R/bits>> when ?IS_WS(C) -> {2, R};
-		<<"====", C, R/bits>> when ?IS_WS(C) -> {3, R};
-		<<"=====", C, R/bits>> when ?IS_WS(C) -> {4, R}
+	{Level, Title0, Ann} = case read_line(St) of
+		{<<"=", C, R/bits>>, A} when ?IS_WS(C) -> {0, R, A};
+		{<<"==", C, R/bits>>, A} when ?IS_WS(C) -> {1, R, A};
+		{<<"===", C, R/bits>>, A} when ?IS_WS(C) -> {2, R, A};
+		{<<"====", C, R/bits>>, A} when ?IS_WS(C) -> {3, R, A};
+		{<<"=====", C, R/bits>>, A} when ?IS_WS(C) -> {4, R, A}
 	end,
-	Ann = ann(St),
 	Title1 = trim(Title0),
 	%% Optional: trailing title delimiter.
 	Trailer = case Level of
@@ -164,49 +165,50 @@ section_title(St) ->
 section_title_test() ->
 	%% With trailing title delimiter.
 	[{section_title, #{level := 0}, <<"Document Title (level 0)">>, _}]
-		= parse(<<"= Document Title (level 0) =">>),
+		= parse(<<"= Document Title (level 0) =">>, #{}),
 	[{section_title, #{level := 1}, <<"Section Title (level 1)">>, _}]
-		= parse(<<"== Section Title (level 1) ==">>),
+		= parse(<<"== Section Title (level 1) ==">>, #{}),
 	[{section_title, #{level := 2}, <<"Section Title (level 2)">>, _}]
-		= parse(<<"=== Section Title (level 2) ===">>),
+		= parse(<<"=== Section Title (level 2) ===">>, #{}),
 	[{section_title, #{level := 3}, <<"Section Title (level 3)">>, _}]
-		= parse(<<"==== Section Title (level 3) ====">>),
+		= parse(<<"==== Section Title (level 3) ====">>, #{}),
 	[{section_title, #{level := 4}, <<"Section Title (level 4)">>, _}]
-		= parse(<<"===== Section Title (level 4) =====">>),
+		= parse(<<"===== Section Title (level 4) =====">>, #{}),
 	%% Without trailing title delimiter.
 	[{section_title, #{level := 0}, <<"Document Title (level 0)">>, _}]
-		= parse(<<"= Document Title (level 0)">>),
+		= parse(<<"= Document Title (level 0)">>, #{}),
 	[{section_title, #{level := 1}, <<"Section Title (level 1)">>, _}]
-		= parse(<<"== Section Title (level 1)">>),
+		= parse(<<"== Section Title (level 1)">>, #{}),
 	[{section_title, #{level := 2}, <<"Section Title (level 2)">>, _}]
-		= parse(<<"=== Section Title (level 2)">>),
+		= parse(<<"=== Section Title (level 2)">>, #{}),
 	[{section_title, #{level := 3}, <<"Section Title (level 3)">>, _}]
-		= parse(<<"==== Section Title (level 3)">>),
+		= parse(<<"==== Section Title (level 3)">>, #{}),
 	[{section_title, #{level := 4}, <<"Section Title (level 4)">>, _}]
-		= parse(<<"===== Section Title (level 4)">>),
+		= parse(<<"===== Section Title (level 4)">>, #{}),
 	%% Accept more spaces before/after delimiters.
 	[{section_title, #{level := 0}, <<"Document Title (level 0)">>, _}]
-		= parse(<<"=   Document Title (level 0)">>),
+		= parse(<<"=   Document Title (level 0)">>, #{}),
 	[{section_title, #{level := 0}, <<"Document Title (level 0)">>, _}]
-		= parse(<<"=   Document Title (level 0) =">>),
+		= parse(<<"=   Document Title (level 0) =">>, #{}),
 	[{section_title, #{level := 0}, <<"Document Title (level 0)">>, _}]
-		= parse(<<"= Document Title (level 0)   =">>),
+		= parse(<<"= Document Title (level 0)   =">>, #{}),
 	[{section_title, #{level := 0}, <<"Document Title (level 0)">>, _}]
-		= parse(<<"= Document Title (level 0) =  ">>),
+		= parse(<<"= Document Title (level 0) =  ">>, #{}),
 	%% A space before the first delimiter is not a title.
-	?NOT(section_title, parse(<<" = Document Title (level 0)">>)),
+	?NOT(section_title, parse(<<" = Document Title (level 0)">>, #{})),
 	ok.
 -endif.
 
 %% Asciidoc User Guide 11.1
 long_section_title(St) ->
 	%% Title must be hard against the left margin.
-	<<C, _/bits>> = Title0 = read_line(St),
-	Ann = ann(St),
+	{Title0, Ann} = read_line(St),
+	<<C, _/bits>> = Title0,
 	false = ?IS_WS(C),
 	Title = trim(Title0),
 	%% Read the underline.
-	{Level, Char, Underline0} = case read_line(St) of
+	{Line,_} = read_line(St),
+	{Level, Char, Underline0} = case Line of
 		U = <<"=", _/bits >> -> {0, $=, U};
 		U = <<"-", _/bits >> -> {1, $-, U};
 		U = <<"~", _/bits >> -> {2, $~, U};
@@ -228,43 +230,43 @@ long_section_title_test() ->
 	%% Same amount of characters for the underline.
 	[{section_title, #{level := 0}, <<"Document Title (level 0)">>, _}] = parse(<<
 		"Document Title (level 0)\n"
-		"========================">>),
+		"========================">>, #{}),
 	[{section_title, #{level := 1}, <<"Section Title (level 1)">>, _}] = parse(<<
 		"Section Title (level 1)\n"
-		"-----------------------">>),
+		"-----------------------">>, #{}),
 	[{section_title, #{level := 2}, <<"Section Title (level 2)">>, _}] = parse(<<
 		"Section Title (level 2)\n"
-		"~~~~~~~~~~~~~~~~~~~~~~~">>),
+		"~~~~~~~~~~~~~~~~~~~~~~~">>, #{}),
 	[{section_title, #{level := 3}, <<"Section Title (level 3)">>, _}] = parse(<<
 		"Section Title (level 3)\n"
-		"^^^^^^^^^^^^^^^^^^^^^^^">>),
+		"^^^^^^^^^^^^^^^^^^^^^^^">>, #{}),
 	[{section_title, #{level := 4}, <<"Section Title (level 4)">>, _}] = parse(<<
 		"Section Title (level 4)\n"
-		"+++++++++++++++++++++++">>),
+		"+++++++++++++++++++++++">>, #{}),
 	%% A shorter title to confirm we are not cheating.
 	[{section_title, #{level := 0}, <<"Hello!">>, _}] = parse(<<
 		"Hello!\n"
-		"======">>),
+		"======">>, #{}),
 	%% Underline can be +/- 2 characters.
 	[{section_title, #{level := 0}, <<"Hello!">>, _}] = parse(<<
 		"Hello!\n"
-		"====">>),
+		"====">>, #{}),
 	[{section_title, #{level := 0}, <<"Hello!">>, _}] = parse(<<
 		"Hello!\n"
-		"=====">>),
+		"=====">>, #{}),
 	[{section_title, #{level := 0}, <<"Hello!">>, _}] = parse(<<
 		"Hello!\n"
-		"=======">>),
+		"=======">>, #{}),
 	[{section_title, #{level := 0}, <<"Hello!">>, _}] = parse(<<
 		"Hello!\n"
-		"========">>),
+		"========">>, #{}),
 	%% Underline too short/long results in a different block.
 	?NOT(section_title, parse(<<
 		"Hello!\n"
-		"===">>)),
+		"===">>, #{})),
 	?NOT(section_title, parse(<<
 		"Hello!\n"
-		"=========">>)),
+		"=========">>, #{})),
 	ok.
 -endif.
 
@@ -274,7 +276,7 @@ long_section_title_test() ->
 %% I am also not sure what characters are allowed,
 %% so what is here is what I came up with guessing.
 block_id(St) ->
-	<<"[[", Line0/bits>> = read_line(St),
+	{<<"[[", Line0/bits>>, Ann} = read_line(St),
 	Line = trim(Line0),
 	Len = byte_size(Line) - 2,
 	<<BlockID:Len/binary, "]]">> = Line,
@@ -284,48 +286,48 @@ block_id(St) ->
 		andalso (C =/= $\s) andalso (C =/= $\t)
 	end, BlockID),
 	%% Good!
-	{block_id, #{id => BlockID}, <<>>, ann(St)}.
+	{block_id, #{id => BlockID}, <<>>, Ann}.
 
 -ifdef(TEST).
 block_id_test() ->
 	%% Valid.
-	[{block_id, #{id := <<"X30">>}, <<>>, _}] = parse(<<"[[X30]]">>),
+	[{block_id, #{id := <<"X30">>}, <<>>, _}] = parse(<<"[[X30]]">>, #{}),
 	%% Invalid.
-	?NOT(block_id, parse(<<"[[block,id]]">>)),
-	?NOT(block_id, parse(<<"[[block[id]]">>)),
-	?NOT(block_id, parse(<<"[[block]id]]">>)),
-	?NOT(block_id, parse(<<"[[block id]]">>)),
-	?NOT(block_id, parse(<<"[[block\tid]]">>)),
+	?NOT(block_id, parse(<<"[[block,id]]">>, #{})),
+	?NOT(block_id, parse(<<"[[block[id]]">>, #{})),
+	?NOT(block_id, parse(<<"[[block]id]]">>, #{})),
+	?NOT(block_id, parse(<<"[[block id]]">>, #{})),
+	?NOT(block_id, parse(<<"[[block\tid]]">>, #{})),
 	%% Must be hard on the left of the line.
-	?NOT(block_id, parse(<<" [[block_id]]">>)),
-	?NOT(block_id, parse(<<"\t[[block_id]]">>)),
+	?NOT(block_id, parse(<<" [[block_id]]">>, #{})),
+	?NOT(block_id, parse(<<"\t[[block_id]]">>, #{})),
 	ok.
 -endif.
 
 %% Asciidoc User Guide 21.2.3
 comment_line(St) ->
-	<<"//", Comment0/bits>> = read_line(St),
+	{<<"//", Comment0/bits>>, Ann} = read_line(St),
 	Comment = trim(Comment0),
 	%% Good!
-	{comment_line, #{<<"subs">> => <<"verbatim">>}, Comment, ann(St)}.
+	{comment_line, #{<<"subs">> => <<"verbatim">>}, Comment, Ann}.
 
 -ifdef(TEST).
 comment_line_test() ->
-	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"// This is a comment.">>),
+	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"// This is a comment.">>, #{}),
 	%% We trim the whitespace around the comment.
-	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"//   This is a comment.">>),
-	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"// This is a comment.   ">>),
-	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"//\tThis is a comment.">>),
-	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"// This is a comment.\t">>),
+	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"//   This is a comment.">>, #{}),
+	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"// This is a comment.   ">>, #{}),
+	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"//\tThis is a comment.">>, #{}),
+	[{comment_line, _, <<"This is a comment.">>, _}] = parse(<<"// This is a comment.\t">>, #{}),
 	[
 		{comment_line, _, <<"First line.">>, _},
 		{comment_line, _, <<"Second line.">>, _}
 	] = parse(<<
 		"// First line.\n"
-		"// Second line.\n">>),
+		"// Second line.\n">>, #{}),
 	%% Must be hard on the left of the line.
-	?NOT(comment_line, parse(<<" // This is a comment.">>)),
-	?NOT(comment_line, parse(<<"\t// This is a comment.">>)),
+	?NOT(comment_line, parse(<<" // This is a comment.">>, #{})),
+	?NOT(comment_line, parse(<<"\t// This is a comment.">>, #{})),
 	ok.
 -endif.
 
@@ -338,8 +340,7 @@ comment_line_test() ->
 %% - ifndef (21.3.2)
 %% - endif (21.3.2)
 block_macro(St) ->
-	Line0 = read_line(St),
-	Ann = ann(St),
+	{Line0, Ann} = read_line(St),
 	%% Name must contain letters, digits or dash characters.
 	{Name, <<"::", Line1/bits>>} = while(fun(C) ->
 		((C >= $a) andalso (C =< $z))
@@ -355,7 +356,7 @@ block_macro(St) ->
 		(C =/= $[) andalso (C =/= $\s) andalso (C =/= $\t)
 	end, Line1),
 	AttrList1 = trim(AttrList0),
-	{attribute_list, AttrList, <<>>, _} = attribute_list(St, AttrList1),
+	{attribute_list, AttrList, <<>>, _} = attribute_list(AttrList1, Ann),
 	%% Block macros must be followed by at least one empty line.
 	_ = empty_line(St),
 	{block_macro, AttrList#{
@@ -369,7 +370,7 @@ block_macro_image_test() ->
 		name := <<"image">>,
 		target := <<"images/layout.png">>,
 		1 := <<"J14P main circuit board">>
-	}, <<>>, _}] = parse(<<"image::images/layout.png[J14P main circuit board]">>),
+	}, <<>>, _}] = parse(<<"image::images/layout.png[J14P main circuit board]">>, #{}),
 	[{block_macro, #{
 		name := <<"image">>,
 		target := <<"images/layout.png">>,
@@ -377,7 +378,7 @@ block_macro_image_test() ->
 		<<"title">> := <<"Main circuit board">>
 	}, <<>>, _}] = parse(
 		<<"image::images/layout.png[\"J14P main circuit board\", "
-			"title=\"Main circuit board\"]">>),
+			"title=\"Main circuit board\"]">>, #{}),
 	ok.
 
 block_macro_include_test() ->
@@ -385,7 +386,7 @@ block_macro_include_test() ->
 		name := <<"include">>,
 		target := <<"chapter1.txt">>,
 		<<"tabsize">> := <<"4">>
-	}, <<>>, _}] = parse(<<"include::chapter1.txt[tabsize=4]">>),
+	}, <<>>, _}] = parse(<<"include::chapter1.txt[tabsize=4]">>, #{}),
 	ok.
 
 block_macro_ifdef_test() ->
@@ -393,12 +394,12 @@ block_macro_ifdef_test() ->
 		name := <<"ifdef">>,
 		target := <<"revnumber">>,
 		0 := <<>>
-	}, <<>>, _}] = parse(<<"ifdef::revnumber[]">>),
+	}, <<>>, _}] = parse(<<"ifdef::revnumber[]">>, #{}),
 	[{block_macro, #{
 		name := <<"ifdef">>,
 		target := <<"revnumber">>,
 		1 := <<"Version number 42">>
-	}, <<>>, _}] = parse(<<"ifdef::revnumber[Version number 42]">>),
+	}, <<>>, _}] = parse(<<"ifdef::revnumber[Version number 42]">>, #{}),
 	ok.
 
 block_macro_ifndef_test() ->
@@ -406,7 +407,7 @@ block_macro_ifndef_test() ->
 		name := <<"ifndef">>,
 		target := <<"revnumber">>,
 		0 := <<>>
-	}, <<>>, _}] = parse(<<"ifndef::revnumber[]">>),
+	}, <<>>, _}] = parse(<<"ifndef::revnumber[]">>, #{}),
 	ok.
 
 block_macro_endif_test() ->
@@ -414,19 +415,19 @@ block_macro_endif_test() ->
 		name := <<"endif">>,
 		target := <<"revnumber">>,
 		0 := <<>>
-	}, <<>>, _}] = parse(<<"endif::revnumber[]">>),
+	}, <<>>, _}] = parse(<<"endif::revnumber[]">>, #{}),
 	%% Some macros accept an empty target.
 	[{block_macro, #{
 		name := <<"endif">>,
 		target := <<>>,
 		0 := <<>>
-	}, <<>>, _}] = parse(<<"endif::[]">>),
+	}, <<>>, _}] = parse(<<"endif::[]">>, #{}),
 	ok.
 -endif.
 
 %% Asciidoc User Guide 17.1
 bulleted_list(St) ->
-	Line0 = read_line(St),
+	{Line0, Ann} = read_line(St),
 	Line1 = trim(Line0),
 	{Type0, Level, ListItem} = case Line1 of
 		<<"-", C, R/bits>> when ?IS_WS(C) -> {dash, 1, R};
@@ -443,41 +444,41 @@ bulleted_list(St) ->
 	list_item(St, #{
 		type => Type,
 		level => Level
-	}, ListItem).
+	}, ListItem, Ann).
 
 -ifdef(TEST).
 bulleted_list_test() ->
 	[{list_item, #{
 		type := bulleted_alt,
 		level := 1
-	}, [{paragraph, _, <<"List item.">>, _}], _}] = parse(<<"- List item.">>),
+	}, [{paragraph, _, [{<<"List item.">>,_}], _}], _}] = parse(<<"- List item.">>, #{}),
 	[{list_item, #{
 		type := bulleted,
 		level := 1
-	}, [{paragraph, _, <<"List item.">>, _}], _}] = parse(<<"* List item.">>),
+	}, [{paragraph, _, [{<<"List item.">>,_}], _}], _}] = parse(<<"* List item.">>, #{}),
 	[{list_item, #{
 		type := bulleted,
 		level := 2
-	}, [{paragraph, _, <<"List item.">>, _}], _}] = parse(<<"** List item.">>),
+	}, [{paragraph, _, [{<<"List item.">>,_}], _}], _}] = parse(<<"** List item.">>, #{}),
 	[{list_item, #{
 		type := bulleted,
 		level := 3
-	}, [{paragraph, _, <<"List item.">>, _}], _}] = parse(<<"*** List item.">>),
+	}, [{paragraph, _, [{<<"List item.">>,_}], _}], _}] = parse(<<"*** List item.">>, #{}),
 	[{list_item, #{
 		type := bulleted,
 		level := 4
-	}, [{paragraph, _, <<"List item.">>, _}], _}] = parse(<<"**** List item.">>),
+	}, [{paragraph, _, [{<<"List item.">>,_}], _}], _}] = parse(<<"**** List item.">>, #{}),
 	[{list_item, #{
 		type := bulleted,
 		level := 5
-	}, [{paragraph, _, <<"List item.">>, _}], _}] = parse(<<"***** List item.">>),
+	}, [{paragraph, _, [{<<"List item.">>,_}], _}], _}] = parse(<<"***** List item.">>, #{}),
 	%% Two list items one after the other.
 	[
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, _, <<"List item 1.">>, _}], _},
+			[{paragraph, _, [{<<"List item 1.">>,_}], _}], _},
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, _, <<"List item 2.">>, _}], _}
-	] = parse(<<"* List item 1.\n* List item 2.">>),
+			[{paragraph, _, [{<<"List item 2.">>,_}], _}], _}
+	] = parse(<<"* List item 1.\n* List item 2.">>, #{}),
 	ok.
 -endif.
 
@@ -485,7 +486,7 @@ bulleted_list_test() ->
 %%
 %% We currently only implement implicit numbering.
 numbered_list(St) ->
-	Line0 = read_line(St),
+	{Line0, Ann} = read_line(St),
 	Line1 = trim(Line0),
 	{Level, ListItem} = case Line1 of
 		<<".", C, R/bits>> when ?IS_WS(C) -> {1, R};
@@ -497,42 +498,42 @@ numbered_list(St) ->
 	list_item(St, #{
 		type => numbered,
 		level => Level
-	}, ListItem).
+	}, ListItem, Ann).
 
 -ifdef(TEST).
 numbered_list_test() ->
 	[{list_item, #{
 		type := numbered,
 		level := 1
-	}, [{paragraph, _, <<"Arabic (decimal) numbered list item.">>, _}], _}]
-		= parse(<<". Arabic (decimal) numbered list item.">>),
+	}, [{paragraph, _, [{<<"Arabic (decimal) numbered list item.">>,_}], _}], _}]
+		= parse(<<". Arabic (decimal) numbered list item.">>, #{}),
 	[{list_item, #{
 		type := numbered,
 		level := 2
-	}, [{paragraph, _, <<"Lower case alpha (letter) numbered list item.">>, _}], _}]
-		= parse(<<".. Lower case alpha (letter) numbered list item.">>),
+	}, [{paragraph, _, [{<<"Lower case alpha (letter) numbered list item.">>,_}], _}], _}]
+		= parse(<<".. Lower case alpha (letter) numbered list item.">>, #{}),
 	[{list_item, #{
 		type := numbered,
 		level := 3
-	}, [{paragraph, _, <<"Lower case roman numbered list item.">>, _}], _}]
-		= parse(<<"... Lower case roman numbered list item.">>),
+	}, [{paragraph, _, [{<<"Lower case roman numbered list item.">>,_}], _}], _}]
+		= parse(<<"... Lower case roman numbered list item.">>, #{}),
 	[{list_item, #{
 		type := numbered,
 		level := 4
-	}, [{paragraph, _, <<"Upper case alpha (letter) numbered list item.">>, _}], _}]
-		= parse(<<".... Upper case alpha (letter) numbered list item.">>),
+	}, [{paragraph, _, [{<<"Upper case alpha (letter) numbered list item.">>,_}], _}], _}]
+		= parse(<<".... Upper case alpha (letter) numbered list item.">>, #{}),
 	[{list_item, #{
 		type := numbered,
 		level := 5
-	}, [{paragraph, _, <<"Upper case roman numbered list item.">>, _}], _}]
-		= parse(<<"..... Upper case roman numbered list item.">>),
+	}, [{paragraph, _, [{<<"Upper case roman numbered list item.">>,_}], _}], _}]
+		= parse(<<"..... Upper case roman numbered list item.">>, #{}),
 	%% Two list items one after the other.
 	[
 		{list_item, #{type := numbered, level := 1},
-			[{paragraph, _, <<"List item 1.">>, _}], _},
+			[{paragraph, _, [{<<"List item 1.">>,_}], _}], _},
 		{list_item, #{type := numbered, level := 1},
-			[{paragraph, _, <<"List item 2.">>, _}], _}
-	] = parse(<<". List item 1.\n. List item 2.">>),
+			[{paragraph, _, [{<<"List item 2.">>,_}], _}], _}
+	] = parse(<<". List item 1.\n. List item 2.">>, #{}),
 	ok.
 -endif.
 
@@ -542,7 +543,7 @@ numbered_list_test() ->
 %% label must be hard on the left margin but we don't
 %% enforce that to simplify the implementation.
 labeled_list(St) ->
-	Line0 = read_line(St),
+	{Line0, Ann} = read_line(St),
 	%% We can't match directly to find the list separator,
 	%% we have to search for it.
 	{Label0, Sep, ListItem0} = find_labeled_list(Line0),
@@ -550,11 +551,12 @@ labeled_list(St) ->
 	ListItem = trim(ListItem0),
 	%% The label must not be empty.
 	true = trim(Label) =/= <<>>,
-	list_item(St, #{
+	T = list_item(St, #{
 		type => labeled,
 		separator => Sep,
 		label => Label
-	}, ListItem).
+	}, ListItem, Ann),
+	T.
 
 find_labeled_list(Line) ->
 	find_labeled_list(Line, <<>>).
@@ -574,34 +576,34 @@ find_labeled_list(<<C, R/bits>>, Acc) -> find_labeled_list(R, <<Acc/binary, C>>)
 -ifdef(TEST).
 labeled_list_test() ->
 	[{list_item, #{type := labeled, separator := <<"::">>, label := <<"Question">>},
-		[{paragraph, _, <<"Answer!">>, _}], _}] = parse(<<"Question:: Answer!">>),
+		[{paragraph, _, [{<<"Answer!">>,_}], _}], _}] = parse(<<"Question:: Answer!">>, #{}),
 	[{list_item, #{type := labeled, separator := <<"::">>, label := <<"Question">>},
-		[{paragraph, _, <<"Answer!">>, _}], _}] = parse(<<"Question::\n  Answer!">>),
+		[{paragraph, _, [{<<"Answer!">>,_}], _}], _}] = parse(<<"Question::\n  Answer!">>, #{}),
 	%% Long snippet from the Asciidoc User Guide, minus literal paragraph.
 	%% @todo Add the literal paragraph back once they are implemented.
 	[
 		{list_item, #{type := labeled, separator := <<"::">>, label := <<"In">>},
-			[{paragraph, _, <<>>, _}], _},
+			[{paragraph, _, [], _}], _},
 		{list_item, #{type := labeled, separator := <<"::">>, label := <<"Lorem">>},
-			[{paragraph, _, <<"Fusce euismod commodo velit.">>, _}], _},
+			[{paragraph, _, [{<<"Fusce euismod commodo velit.">>,_}], _}], _},
 		{list_item, #{type := labeled, separator := <<"::">>, label := <<"Ipsum">>},
-			[{paragraph, _, <<"Vivamus fringilla mi eu lacus.">>, _}], _},
+			[{paragraph, _, [{<<"Vivamus fringilla mi eu lacus.">>,_}], _}], _},
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, _, <<"Vivamus fringilla mi eu lacus.">>, _}], _},
+			[{paragraph, _, [{<<"Vivamus fringilla mi eu lacus.">>,_}], _}], _},
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, _, <<"Donec eget arcu bibendum nunc consequat lobortis.">>, _}], _},
+			[{paragraph, _, [{<<"Donec eget arcu bibendum nunc consequat lobortis.">>,_}], _}], _},
 		{list_item, #{type := labeled, separator := <<"::">>, label := <<"Dolor">>},
-			[{paragraph, _, <<"Donec eget arcu bibendum nunc consequat lobortis.">>, _}], _},
+			[{paragraph, _, [{<<"Donec eget arcu bibendum nunc consequat lobortis.">>,_}], _}], _},
 		{list_item, #{type := labeled, separator := <<";;">>, label := <<"Suspendisse">>},
-			[{paragraph, _, <<"A massa id sem aliquam auctor.">>, _}], _},
+			[{paragraph, _, [{<<"A massa id sem aliquam auctor.">>,_}], _}], _},
 		{list_item, #{type := labeled, separator := <<";;">>, label := <<"Morbi">>},
-			[{paragraph, _, <<"Pretium nulla vel lorem.">>, _}], _},
+			[{paragraph, _, [{<<"Pretium nulla vel lorem.">>,_}], _}], _},
 		{list_item, #{type := labeled, separator := <<";;">>, label := <<"In">>},
-			[{paragraph, _, <<"Dictum mauris in urna.">>, _}], _},
+			[{paragraph, _, [{<<"Dictum mauris in urna.">>,_}], _}], _},
 		{list_item, #{type := labeled, separator := <<":::">>, label := <<"Vivamus">>},
-			[{paragraph, _, <<"Fringilla mi eu lacus.">>, _}], _},
+			[{paragraph, _, [{<<"Fringilla mi eu lacus.">>,_}], _}], _},
 		{list_item, #{type := labeled, separator := <<":::">>, label := <<"Donec">>},
-			[{paragraph, _, <<"Eget arcu bibendum nunc consequat lobortis.">>, _}], _}
+			[{paragraph, _, [{<<"Eget arcu bibendum nunc consequat lobortis.">>,_}], _}], _}
 	] = parse(<<
 		"In::\n"
 		"Lorem::\n"
@@ -619,7 +621,7 @@ labeled_list_test() ->
 		"  In;;\n"
 		"    Dictum mauris in urna.\n"
 		"    Vivamus::: Fringilla mi eu lacus.\n"
-		"    Donec:::   Eget arcu bibendum nunc consequat lobortis.\n">>),
+		"    Donec:::   Eget arcu bibendum nunc consequat lobortis.\n">>, #{}),
 	ok.
 -endif.
 
@@ -633,34 +635,33 @@ callout_list(St) -> throw({not_implemented, St}). %% @todo
 %% the list item at this stage of parsing. We only concern
 %% ourselves with identifying blocks, and then another pass
 %% will build a tree from the result of this pass.
-list_item(St, Attrs, ListItem0) ->
-	ListItem1 = trim(ListItem0),
-	Ann = ann(St),
+list_item(St, Attrs, ListItem0, Ann) ->
 	%% For labeled lists, we may need to skip empty lines
 	%% until the start of the list item contents, since
 	%% it can begin on a separate line from the label.
-	_ = case {ListItem1, Attrs} of
+	Acc = case {trim(ListItem0), Attrs} of
 		{<<>>, #{type := labeled}} ->
-			read_while(St, fun skip_empty_lines/1, <<>>);
-		_ ->
-			ok
+			read_while(St, fun skip_empty_lines/1, []),
+			[];
+		{ListItem1, _} ->
+			[{ListItem1,Ann}]
 	end,
 	%% A list item ends on end of file, empty line or when a new list starts.
 	%% Any indentation is optional and therefore removed.
-	ListItem = read_while(St, fun fold_list_item/1, ListItem1),
+	ListItem = read_while(St, fun fold_list_item/1, Acc),
 	{list_item, Attrs, [{paragraph, #{}, ListItem, Ann}], Ann}.
 
-skip_empty_lines(eof) ->
+skip_empty_lines({eof,_}) ->
 	done;
-skip_empty_lines(Line) ->
+skip_empty_lines({Line,_}) ->
 	case trim(Line) of
 		<<>> -> {more, <<>>};
 		_ -> done
 	end.
 
-fold_list_item(eof) ->
+fold_list_item({eof,_}) ->
 	done;
-fold_list_item(Line0) ->
+fold_list_item({Line0,Ann}) ->
 	case trim(Line0) of
 		<<>> -> done;
 		<<"+">> -> done;
@@ -680,7 +681,7 @@ fold_list_item(Line0) ->
 			try find_labeled_list(Line) of
 				{_, _, _} -> done
 			catch _:_ ->
-				{more, Line}
+				{more, {Line, Ann}}
 			end
 	end.
 
@@ -688,49 +689,49 @@ fold_list_item(Line0) ->
 list_item_test() ->
 	[
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, #{}, <<"List item.">>, _}], _},
+			[{paragraph, #{}, [{<<"List item.">>,_}], _}], _},
 		{list_item, #{type := bulleted, level := 2},
-			[{paragraph, #{}, <<"List item.">>, _}], _},
+			[{paragraph, #{}, [{<<"List item.">>,_}], _}], _},
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, #{}, <<"List item.">>, _}], _},
+			[{paragraph, #{}, [{<<"List item.">>,_}], _}], _},
 		{list_item, #{type := numbered, level := 1},
-			[{paragraph, #{}, <<"List item.">>, _}], _},
+			[{paragraph, #{}, [{<<"List item.">>,_}], _}], _},
 		{list_item, #{type := numbered, level := 1},
-			[{paragraph, #{}, <<"List item.">>, _}], _},
+			[{paragraph, #{}, [{<<"List item.">>,_}], _}], _},
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, #{}, <<"List item.">>, _}], _}
+			[{paragraph, #{}, [{<<"List item.">>,_}], _}], _}
 	] = parse(<<
 		"* List item.\n"
 		"** List item.\n"
 		"* List item.\n"
 		"  . List item.\n"
 		"  . List item.\n"
-		"* List item.\n">>),
+		"* List item.\n">>, #{}),
 	%% Properly detect a labeled list.
 	[
 		{list_item, #{type := bulleted, level := 1},
-			[{paragraph, #{}, <<"List item.\nMultiline.">>, _}], _},
+			[{paragraph, #{}, [{<<"List item.">>,_},{<<"Multiline.">>,_}], _}], _},
 		{list_item, #{type := labeled, label := <<"Question">>},
-			[{paragraph, #{}, <<"Answer!">>, _}], _}
+			[{paragraph, #{}, [{<<"Answer!">>,_}], _}], _}
 	] = parse(<<
 		"* List item.\n"
 		"Multiline.\n"
-		"Question:: Answer!\n">>),
+		"Question:: Answer!\n">>, #{}),
 	ok.
 -endif.
 
 %% Asciidoc User Guide 17.7
 list_item_continuation(St) ->
 	%% Continuations are a single + hard against the left margin.
-	<<$+, Whitespace/bits>> = read_line(St),
+	{<<$+, Whitespace/bits>>, Ann} = read_line(St),
 	<<>> = trim(Whitespace),
-	{list_item_continuation, #{}, <<>>, ann(St)}.
+	{list_item_continuation, #{}, <<>>, Ann}.
 
 -ifdef(TEST).
 list_item_continuation_test() ->
-	[{list_item_continuation, _, _, _}] = parse(<<"+">>),
-	[{list_item_continuation, _, _, _}] = parse(<<"+   ">>),
-	[{list_item_continuation, _, _, _}] = parse(<<"+\n">>),
+	[{list_item_continuation, _, _, _}] = parse(<<"+">>, #{}),
+	[{list_item_continuation, _, _, _}] = parse(<<"+   ">>, #{}),
+	[{list_item_continuation, _, _, _}] = parse(<<"+\n">>, #{}),
 	ok.
 -endif.
 
@@ -747,10 +748,11 @@ listing_block_test() ->
 		"   printf(\"Hello World!\n\");\n"
 		"   exit(0);\n"
 		"}">>,
-	[{listing_block, _, Block, _}] = parse(<<
+	[{listing_block, _, Expected, _}] = parse(<<
 		"--------------------------------------\n",
 		Block/binary, "\n"
-		"--------------------------------------\n">>),
+		"--------------------------------------\n">>, #{}),
+	Block = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
 -endif.
 
@@ -764,10 +766,11 @@ literal_block_test() ->
 		"Consul *necessitatibus* per id,\n"
 		"consetetur, eu pro everti postulant\n"
 		"homero verear ea mea, qui.">>,
-	[{literal_block, _, Block, _}] = parse(<<
+	[{literal_block, _, Expected, _}] = parse(<<
 		"...................................\n",
 		Block/binary, "\n"
-		"...................................\n">>),
+		"...................................\n">>, #{}),
+	Block = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
 -endif.
 
@@ -780,10 +783,11 @@ sidebar_block_test() ->
 	Block = <<
 		"Any AsciiDoc SectionBody element (apart from\n"
 		"SidebarBlocks) can be placed inside a sidebar.">>,
-	[{sidebar_block, _, Block, _}] = parse(<<
+	[{sidebar_block, _, Expected, _}] = parse(<<
 		"************************************************\n",
 		Block/binary, "\n"
-		"************************************************\n">>),
+		"************************************************\n">>, #{}),
+	Block = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
 -endif.
 
@@ -796,10 +800,11 @@ comment_block_test() ->
 	Block = <<
 		"CommentBlock contents are not processed by\n"
 		"asciidoc(1).">>,
-	[{comment_block, _, Block, _}] = parse(<<
+	[{comment_block, _, Expected, _}] = parse(<<
 		"//////////////////////////////////////////\n",
 		Block/binary, "\n"
-		"//////////////////////////////////////////\n">>),
+		"//////////////////////////////////////////\n">>, #{}),
+	Block = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
 -endif.
 
@@ -814,10 +819,11 @@ passthrough_block_test() ->
 		"  <td>*Cell 1*</td>\n"
 		"  <td>*Cell 2*</td>\n"
 		"</tr></table>">>,
-	[{passthrough_block, _, Block, _}] = parse(<<
+	[{passthrough_block, _, Expected, _}] = parse(<<
 		"++++++++++++++++++++++++++++++++++++++\n",
 		Block/binary, "\n"
-		"++++++++++++++++++++++++++++++++++++++\n">>),
+		"++++++++++++++++++++++++++++++++++++++\n">>, #{}),
+	Block = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
 -endif.
 
@@ -836,10 +842,11 @@ quote_block_test() ->
 		"out of the window. \"A nice little brougham and a pair of\n"
 		"beauties. A hundred and fifty guineas apiece. There's money in\n"
 		"this case, Watson, if there is nothing else.\"">>,
-	[{quote_block, _, Block, _}] = parse(<<
+	[{quote_block, _, Expected, _}] = parse(<<
 		"____________________________________________________________________\n",
 		Block/binary, "\n"
-		"____________________________________________________________________\n">>),
+		"____________________________________________________________________\n">>, #{}),
+	Block = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
 -endif.
 
@@ -852,10 +859,11 @@ example_block_test() ->
 	Block = <<
 		"Qui in magna commodo, est labitur dolorum an. Est ne magna primis\n"
 		"adolescens.">>,
-	[{example_block, _, Block, _}] = parse(<<
+	[{example_block, _, Expected, _}] = parse(<<
 		"=====================================================================\n",
 		Block/binary, "\n"
-		"=====================================================================\n">>),
+		"=====================================================================\n">>, #{}),
+	Block = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
 -endif.
 
@@ -868,25 +876,25 @@ delimited_block(St, Name, Char, Attrs) ->
 
 delimited_block(St, Name, Char, Attrs, Four) ->
 	%% A delimiter block begins by a series of four or more repeated characters.
-	<<Four:4/binary, Line0/bits>> = read_line(St),
-	Ann = ann(St),
+	{<<Four:4/binary, Line0/bits>>, Ann} = read_line(St),
 	Line = trim(Line0, trailing),
-	repeats(Line, Char),
+	%% Closing and opening tag must have same length
+	N = repeats(Line, Char),
 	%% Get the content of the block as-is.
-	Block = read_while(St, fun(L) -> fold_delimited_block(L, Four, Char) end, <<>>),
+	Block = read_while(St, fun(L) -> fold_delimited_block(L, Four, Char, N) end, []),
 	%% Skip the trailing delimiter line.
 	_ = read_line(St),
 	{Name, Attrs, Block, Ann}.
 
 %% Accept eof as a closing delimiter.
-fold_delimited_block(eof, _, _) ->
+fold_delimited_block({eof,_}, _, _, _) ->
 	done;
-fold_delimited_block(Line0, Four, Char) ->
+fold_delimited_block(Line0, Four, Char, N) ->
 	case Line0 of
-		<<Four:4/binary, Line1/bits>> ->
+		{<<Four:4/binary, Line1/bits>>,_} ->
 			try
 				Line = trim(Line1, trailing),
-				repeats(Line, Char),
+				N = repeats(Line, Char),
 				done
 			catch _:_ ->
 				{more, Line0}
@@ -901,15 +909,15 @@ delimited_block_test() ->
 	%%
 	%% We see an extra line break because asciideck_line_reader adds
 	%% one at the end of every files to ease processing.
-	[{listing_block, _, <<"Hello!\n\n">>, _}] = parse(<<
+	[{listing_block, _, [{<<"Hello!">>,_},{<<>>,_},{<<>>,_}], _}] = parse(<<
 		"----\n"
-		"Hello!\n">>),
+		"Hello!\n">>, #{}),
 	%% Same without a trailing line break.
 	%%
 	%% We also see an extra line break for the aforementioned reasons.
-	[{listing_block, _, <<"Hello!\n">>, _}] = parse(<<
+	[{listing_block, _, [{<<"Hello!">>,_},{<<>>,_}], _}] = parse(<<
 		"----\n"
-		"Hello!">>),
+		"Hello!">>, #{}),
 	ok.
 -endif.
 
@@ -930,11 +938,35 @@ table_test() ->
 		"|1 |2 |A\n"
 		"|3 |4 |B\n"
 		"|5 |6 |C">>,
-	[{table, _, Block, _}] = parse(<<
+	[{table, _, Expected, _}] = parse(<<
 		"|=======\n",
 		Block/binary, "\n"
-		"|=======\n">>),
+		"|=======\n">>, #{}),
+	Block = iolist_to_binary(lists:join(<<"\n">>, lists:map(fun({L,_}) -> L end, Expected))),
 	ok.
+
+% table_alt_test() ->
+% 	Block = <<
+% 		"!1 !2 !A\n"
+% 		"!3 !4 !B\n"
+% 		"!5 !6 !C">>,
+% 	[{table, _, Block, _}] = parse(<<
+% 		"!=======\n",
+% 		Block/binary, "\n"
+% 		"!=======\n">>, #{}),
+% 	ok.
+
+% table_custom_test() ->
+% 	Block = <<
+% 		"¦1 ¦2 ¦A\n"
+% 		"¦3 ¦4 ¦B\n"
+% 		"¦5 ¦6 ¦C">>,
+% 	[{table, _, Block, _}] = parse(<<
+% 		"[separator=¦]"
+% 		"|=======\n",
+% 		Block/binary, "\n"
+% 		"|=======\n">>, #{}),
+% 	ok.
 -endif.
 
 %% Asciidoc User Guide 28
@@ -943,56 +975,55 @@ attribute_entry(St) -> throw({not_implemented, St}). %% @todo
 
 %% Asciidoc User Guide 14, 29
 attribute_list(St) ->
-	AttrList = read_line(St),
-	attribute_list(St, AttrList).
+	{AttrList, Ann} = read_line(St),
+	attribute_list(AttrList, Ann).
 
-attribute_list(St, AttrList0) ->
+attribute_list(AttrList0, Ann) ->
 	%% First we remove the enclosing square brackets.
 	<<$[, AttrList1/bits>> = AttrList0,
 	AttrList2 = trim(AttrList1),
 	Len = byte_size(AttrList2) - 1,
 	<<AttrList3:Len/binary, $]>> = AttrList2,
 	AttrList = asciideck_attributes_parser:parse(AttrList3),
-	{attribute_list, AttrList, <<>>, ann(St)}.
+	{attribute_list, AttrList, <<>>, Ann}.
 
 -ifdef(TEST).
 attribute_list_test() ->
 	[{attribute_list, #{0 := <<"Hello">>, 1 := <<"Hello">>}, <<>>, _}]
-		= parse(<<"[Hello]">>),
+		= parse(<<"[Hello]">>, #{}),
 	[{attribute_list, #{
 		1 := <<"quote">>,
 		2 := <<"Bertrand Russell">>,
 		3 := <<"The World of Mathematics (1956)">>
 	}, <<>>, _}]
-		= parse(<<"[quote, Bertrand Russell, The World of Mathematics (1956)]">>),
+		= parse(<<"[quote, Bertrand Russell, The World of Mathematics (1956)]">>, #{}),
 	[{attribute_list, #{
 		1 := <<"22 times">>,
 		<<"backcolor">> := <<"#0e0e0e">>,
 		<<"options">> := <<"noborders,wide">>
 	}, <<>>, _}]
-		= parse(<<"[\"22 times\", backcolor=\"#0e0e0e\", options=\"noborders,wide\"]">>),
+		= parse(<<"[\"22 times\", backcolor=\"#0e0e0e\", options=\"noborders,wide\"]">>, #{}),
 	[{attribute_list, #{
 		1 := <<"A footnote&#44; &#34;with an image&#34; image:smallnew.png[]">>
 	}, <<>>, _}]
-		= parse(<<"[A footnote&#44; &#34;with an image&#34; image:smallnew.png[]]">>),
+		= parse(<<"[A footnote&#44; &#34;with an image&#34; image:smallnew.png[]]">>, #{}),
 	ok.
 -endif.
 
 %% Asciidoc User Guide 12
 block_title(St) ->
 	%% A block title line begins with a period and is followed by the title text.
-	<<$., Title0/bits>> = read_line(St),
-	Ann = ann(St),
+	{<<$., Title0/bits>>, Ann} = read_line(St),
 	Title = trim(Title0),
 	{block_title, #{}, Title, Ann}.
 
 -ifdef(TEST).
 block_title_test() ->
 	%% Valid.
-	[{block_title, _, <<"Notes">>, _}] = parse(<<".Notes">>),
-	[{block_title, _, <<"Notes">>, _}] = parse(<<".Notes   ">>),
+	[{block_title, _, <<"Notes">>, _}] = parse(<<".Notes">>, #{}),
+	[{block_title, _, <<"Notes">>, _}] = parse(<<".Notes   ">>, #{}),
 	%% Invalid.
-	?NOT(block_title, parse(<<". Notes">>)),
+	?NOT(block_title, parse(<<". Notes">>, #{})),
 	ok.
 -endif.
 
@@ -1007,24 +1038,24 @@ admonition_para(St) -> throw({not_implemented, St}). %% @todo
 %% Asciidoc User Guide 15.1
 para(St) ->
 	%% Paragraph must be hard against the left margin.
-	<<C, _/bits>> = Para0 = read_line(St),
-	Ann = ann(St),
+	{Para0, Ann} = read_line(St),
+	<<C, _/bits>> = Para0,
 	%% @todo Uncomment this line once everything else has been implemented.
 	_ = ?IS_WS(C), % false = ?IS_WS(C),
 	Para1 = trim(Para0),
 	%% Paragraph ends at blank line, end of file or start of delimited block or list.
-	Para = read_while(St, fun fold_para/1, Para1),
+	Para = read_while(St, fun fold_para/1, [{Para1,Ann}]),
 	{paragraph, #{}, Para, Ann}.
 
-fold_para(eof) ->
+fold_para({eof,_}) ->
 	done;
-fold_para(Line) ->
+fold_para({Line, Ann}) ->
 	case trim(Line) of
 		<<>> -> done;
 		<<"+">> -> done;
 		<<"//", _/bits>> -> done;
 		%% @todo Detect delimited block or list.
-		_ -> {more, Line}
+		_ -> {more, {Line, Ann}}
 	end.
 
 -ifdef(TEST).
@@ -1040,21 +1071,23 @@ para_test() ->
 		"sunt in culpa qui officia deserunt mollit anim id est laborum."
 	>>,
 	%% Paragraph followed by end of file.
-	[{paragraph, _, LoremIpsum, _}] = parse(<< LoremIpsum/binary, "\n">>),
+	[{paragraph, _, ExpectedLoremIpsum, _}] = parse(<< LoremIpsum/binary, "\n">>, #{}),
 	%% Paragraph followed by end of file with no trailing line break..
-	[{paragraph, _, LoremIpsum, _}] = parse(LoremIpsum),
+	[{paragraph, _, ExpectedLoremIpsum, _}] = parse(LoremIpsum, #{}),
 	%% Paragraph followed by list continuation.
-	[{paragraph, _, LoremIpsum, _}, {list_item_continuation, _, _, _}]
-		= parse(<<LoremIpsum/binary, "\n+">>),
+	[{paragraph, _, ExpectedLoremIpsum, _}, {list_item_continuation, _, _, _}]
+		= parse(<<LoremIpsum/binary, "\n+">>, #{}),
 	%% Paragraph followed by comment.
-	[{paragraph, _, LoremIpsum, _}, {comment_line, _, <<"@todo Double check.">>, _}]
-		= parse(<<LoremIpsum/binary, "\n// @todo Double check.">>),
+	[{paragraph, _, ExpectedLoremIpsum, _}, {comment_line, _, <<"@todo Double check.">>, _}]
+		= parse(<<LoremIpsum/binary, "\n// @todo Double check.">>, #{}),
 	%% Two paragraphs.
-	[{paragraph, _, LoremIpsum, _}, {paragraph, _, LoremIpsum, _}]
+	[{paragraph, _, ExpectedLoremIpsum, _}, {paragraph, _, ExpectedLoremIpsum1, _}]
 		= parse(<<
 			LoremIpsum/binary,
 			"\n\n",
-			LoremIpsum/binary >>),
+			LoremIpsum/binary >>, #{}),
+	LoremIpsum = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, ExpectedLoremIpsum))),
+	LoremIpsum = iolist_to_binary(lists:join("\n",lists:map(fun({L,_}) -> L end, ExpectedLoremIpsum1))),
 	ok.
 -endif.
 
@@ -1086,21 +1119,16 @@ skip(Parse, St=#state{reader=ReaderPid}) ->
 read_line(#state{reader=ReaderPid}) ->
 	asciideck_reader:read_line(ReaderPid).
 
+-spec read_while(#state{reader :: pid()}, fun( (#state{}) -> done | {more, {binary(), map()}} ), list({binary(), map()})) -> list({binary(), map()}).
 read_while(St=#state{reader=ReaderPid}, F, Acc) ->
 	Ln = asciideck_reader:get_position(ReaderPid),
 	case F(read_line(St)) of
 		done ->
 			asciideck_reader:set_position(ReaderPid, Ln),
-			Acc;
-		{more, Line} ->
-			case Acc of
-				<<>> -> read_while(St, F, Line);
-				_ -> read_while(St, F, <<Acc/binary, $\n, Line/binary>>)
-			end
+			lists:reverse(Acc);
+		{more, Line } ->
+			read_while(St, F, [Line|Acc])
 	end.
-
-ann(#state{reader=ReaderPid}) ->
-	#{line => asciideck_reader:get_position(ReaderPid)}.
 
 trim(Line) ->
 	trim(Line, both).
@@ -1112,8 +1140,10 @@ trim(Line, Direction) ->
 	end,
 	iolist_to_binary(re:replace(Line, Regex, <<>>, [global])).
 
-repeats(<<>>, _) -> ok;
-repeats(<<C, Rest/bits>>, C) -> repeats(Rest, C).
+repeats(Line, C) -> repeats(Line, C, 0).
+
+repeats(<<>>, _, Count) -> Count;
+repeats(<<C, Rest/bits>>, C, Count) -> repeats(Rest, C, Count+1).
 
 while(F, Bin) ->
 	while(Bin, F, <<>>).

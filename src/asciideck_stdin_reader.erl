@@ -44,15 +44,15 @@ init([]) ->
 
 handle_call(read_line, _From, State=#state{lines=Lines, pos=Pos})
 		when length(Lines) >= Pos ->
-	{reply, lists:nth(Pos, lists:reverse(Lines)), State#state{pos=Pos + 1}};
+	{reply, {lists:nth(Pos, lists:reverse(Lines)), #{source=><<"std">>, line=>Pos}}, State#state{pos=Pos + 1}};
 handle_call(read_line, _From, State=#state{lines=Lines, pos=Pos}) ->
 	case io:get_line('') of
 		eof ->
-			{reply, eof, State};
+			{reply, {eof, #{source => <<"std">>, line => Pos}}, State};
 		Line0 ->
 			Line1 = string:strip(Line0, right, $\n),
 			Line = unicode:characters_to_binary(Line1),
-			{reply, Line, State#state{lines=[Line|Lines], pos=Pos + 1}}
+			{reply, {Line, #{source => <<"std">>, line=>Pos}}, State#state{lines=[Line|Lines], pos=Pos + 1}}
 	end;
 handle_call(get_position, _From, State=#state{pos=Pos}) ->
 	{reply, Pos, State};

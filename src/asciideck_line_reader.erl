@@ -29,29 +29,31 @@
 -record(state, {
 	lines :: [binary()],
 	length :: non_neg_integer(),
-	pos = 1 :: non_neg_integer()
+	pos = 1 :: non_neg_integer(),
+	source :: string()
 }).
 
 %% API.
 
--spec start_link(binary()) -> {ok, pid()}.
-start_link(Data) ->
-	gen_server:start_link(?MODULE, [Data], []).
+-spec start_link([{binary(),map()}]) -> {ok, pid()}.
+start_link(Lines) ->
+	gen_server:start_link(?MODULE, [Lines], []).
 
 %% gen_server.
 
-init([Data]) ->
-	Lines0 = binary:split(Data, <<"\n">>, [global]),
+init([Lines]) ->
+	{_, #{source := Source}} = hd(Lines),
+
 	%% We add an empty line at the end to simplify parsing.
 	%% This has the inconvenient that when parsing blocks
 	%% this empty line will be included in the result if
 	%% the block is not properly closed.
-	Lines = lists:append(Lines0, [<<>>]),
-	{ok, #state{lines=Lines, length=length(Lines)}}.
+	Lines0 = lists:append(Lines, [{<<>>,#{source=>Source, line=>length(Lines)}}]),
+	{ok, #state{lines=Lines0, length=length(Lines0), source=Source}}.
 
-handle_call(read_line, _From, State=#state{length=Length, pos=Pos})
+handle_call(read_line, _From, State=#state{length=Length, pos=Pos, source=Source})
 		when Pos > Length ->
-	{reply, eof, State};
+	{reply, {eof, #{source=>Source, line=>Pos}}, State};
 %% @todo I know this isn't the most efficient. We could keep
 %% the lines read separately and roll back when set_position
 %% wants us to. But it works fine for now.

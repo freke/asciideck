@@ -22,6 +22,10 @@
 
 -export([run/1]).
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -define(IS_WS(C), (C =:= $\s) or (C =:= $\t) or (C =:= $\n).
 
 run([]) ->
@@ -32,52 +36,55 @@ run([Block|Tail]) ->
 	[Block|run(Tail)].
 
 table({table, Attrs, Contents, Ann}) ->
-	{Cells, NumCols} = parse_table(Contents, Attrs),
-	Children = rows(Cells, NumCols),
+	{Cells, NumCols} = parse_table(Contents, Attrs, Ann),
+	Children = rows(Cells, NumCols, Ann),
 	{table, Attrs, Children, Ann}.
 
 -ifdef(TEST).
 table_test() ->
-	{table, _, [
-		{row, _, [
-			{cell, _, [{paragraph, _, <<"1">>, _}], _},
-			{cell, _, [{paragraph, _, <<"2">>, _}], _},
-			{cell, _, [{paragraph, _, <<"A">>, _}], _}
-		], _},
-		{row, _, [
-			{cell, _, [{paragraph, _, <<"3">>, _}], _},
-			{cell, _, [{paragraph, _, <<"4">>, _}], _},
-			{cell, _, [{paragraph, _, <<"B">>, _}], _}
-		], _},
-		{row, _, [
-			{cell, _, [{paragraph, _, <<"5">>, _}], _},
-			{cell, _, [{paragraph, _, <<"6">>, _}], _},
-			{cell, _, [{paragraph, _, <<"C">>, _}], _}
-		], _}
-	], _} = table({table, #{}, <<
-		"|1 |2 |A\n"
-		"|3 |4 |B\n"
-		"|5 |6 |C">>, #{line => 1}}),
-	ok.
+	?assertMatch(
+		{table, _, [
+			{row, _, [
+				{cell, _, [{paragraph, _, [{<<"1">>,_}], _}], _},
+				{cell, _, [{paragraph, _, [{<<"2">>,_}], _}], _},
+				{cell, _, [{paragraph, _, [{<<"A">>,_}], _}], _}
+			], #{line := 2, source := "stdin"}},
+			{row, _, [
+				{cell, _, [{paragraph, _, [{<<"3">>,_}], _}], _},
+				{cell, _, [{paragraph, _, [{<<"4">>,_}], _}], _},
+				{cell, _, [{paragraph, _, [{<<"B">>,_}], _}], _}
+			], #{line := 3, source := "stdin"}},
+			{row, _, [
+				{cell, _, [{paragraph, _, [{<<"5">>,_}], _}], _},
+				{cell, _, [{paragraph, _, [{<<"6">>,_}], _}], _},
+				{cell, _, [{paragraph, _, [{<<"C">>,_}], _}], _}
+			], #{line := 4, source := "stdin"}}
+		], #{line := 1}},
+		table({table, #{}, [
+			{<<"|1 |2 |A">>,#{line=>2,source=>"stdin"}},
+			{<<"|3 |4 |B">>,#{line=>3,source=>"stdin"}},
+			{<<"|5 |6 |C">>,#{line=>4,source=>"stdin"}}
+		], #{line => 1}})
+	).
 -endif.
 
 %% If the cols attribute is not specified, the number of
 %% columns is the number of cells on the first line.
-parse_table(Contents, #{<<"cols">> := Cols}) ->
-	{parse_cells(Contents, []), num_cols(Cols)};
+parse_table(Contents, #{<<"cols">> := Cols}, Ann) ->
+	{parse_cells(Contents, [], Ann), num_cols(Cols)};
 %% We get the first line, parse the cells in it then
 %% count the number of columns in the table. Finally
 %% we parse all the remaining cells.
-parse_table(Contents, _) ->
-	case binary:split(Contents, <<$\n>>) of
+parse_table(Contents, _, Ann) ->
+	case Contents of
 		%% We only have the one line. Who writes tables like this?
 		[Line] ->
-			Cells = parse_cells(Line, []),
+			Cells = parse_cells(Line, [], Ann),
 			{Cells, length(Cells)};
 		%% We have a useful table with more than one line. Good user!
-		[Line, Rest] ->
-			Cells0 = parse_cells(Line, []),
-			Cells = parse_cells(Rest, lists:reverse(Cells0)),
+		[Line|Rest] ->
+			Cells0 = parse_cells(Line, [], Ann),
+			Cells = parse_cells(Rest, lists:reverse(Cells0), Ann),
 			{Cells, length(Cells0)}
 	end.
 
@@ -215,16 +222,34 @@ parse_specs_test_() ->
 	[{V, fun() -> R = parse_specs(V) end} || {V, R} <- Tests].
 -endif.
 
-parse_cells(Contents, Acc) ->
-	Cells = split_cells(Contents),%binary:split(Contents, [<<$|>>], [global]),
-	do_parse_cells(Cells, Acc).
+parse_cells(Contents, Acc, _Ann) ->
+	{Cells, Ann} = split_cells(Contents),%binary:split(Contents, [<<$|>>], [global]),
+	do_parse_cells(Cells, Acc, Ann).
 	%% Split on |
 	%% Look at the end of each element see if there's a cell specifier
 	%% Add it as an attribute to the cell for now and consolidate
 	%% when processing rows.
 
-split_cells(Contents) ->
-	split_cells(Contents, <<>>, []).
+split_cells({Contents,Ann}) when is_binary(Contents) ->
+	R = {split_cells(Contents, <<>>, []), Ann},
+	R;
+split_cells(Contents) when is_list(Contents) ->
+	{_,Ann} = hd(Contents),
+	R = {split_cells(iolist_to_binary(lists:foldr(fun({L,_},Acc) -> [L,"\n"|Acc] end, [], Contents)), <<>>, []), Ann},
+	R.
+
+split_cells([], Cell, Acc) ->
+	lists:reverse([Cell|Acc]);
+split_cells([{Row,L}|_Rest], Cell, _Acc) ->
+	SplitRow = re:split(Row,"((?<=^|\\s|\\|)(?:(?:\\d?(?:\\.\\d)?\\+)|(?:\\d+\\*))?(?:[\\^<>](?:\\.[\\^<>])?)?(?:[adehlms])?)\\|",[group]),
+	{_,R} = lists:foldl(
+		fun([S1,S2],{{A0,C0,Ann0},Acc0}) -> 
+			{{S2,[],L}, [{A0,lists:reverse([S1|C0]),Ann0}|Acc0]};
+		   ([S1],{{A0,C0,Ann0},Acc0}) ->
+			{{<<>>,[],L}, [{A0,lists:reverse([S1|C0]),Ann0}|Acc0]}
+		end, 
+		{Cell,[]}, SplitRow),
+	{tl(lists:reverse(R)),L};
 
 split_cells(<<>>, Cell, Acc) ->
 	lists:reverse([Cell|Acc]);
@@ -235,27 +260,61 @@ split_cells(<<$|, R/bits>>, Cell, Acc) ->
 split_cells(<<C, R/bits>>, Cell, Acc) ->
 	split_cells(R, <<Cell/binary, C>>, Acc).
 
+-ifdef(TEST).
+split_cells_test() ->
+	?assertMatch(
+		{
+			[{<<>>,[<<" a ">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			,{<<>>,[<<" b ">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			,{<<>>,[<<" c">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			],
+			#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}
+		}, 
+		split_cells([{<<"| a | b | c">>, #{line => 8,source => "/workspaces/asciideck/priv/test.adoc"}}], {<<>>,[],#{}}, [])
+	),
+	?assertMatch(
+		{
+			[{<<"a">>,[<<" 1 ">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			,{<<"a">>,[<<" 2 ">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			,{<<"a">>,[<<" 3">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			],
+			#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}
+		}, 
+		split_cells([{<<"a| 1 a| 2 a| 3">>, #{line => 8,source => "/workspaces/asciideck/priv/test.adoc"}}], {<<>>,[],#{}}, [])
+	),
+	?assertMatch(
+		{
+			[{<<"a">>,[<<>>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			,{<<>>,[<<" 2 ">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			,{<<"a">>,[<<" 3">>],#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}}
+			],
+			#{line := 8,source := "/workspaces/asciideck/priv/test.adoc"}
+		}, 
+		split_cells([{<<"a|| 2 a| 3">>, #{line => 8,source => "/workspaces/asciideck/priv/test.adoc"}}], {<<>>,[],#{}}, [])
+	).
+-endif.
+
 %% Malformed table (no pipe before cell). Process it like it is a single cell.
-do_parse_cells([Contents], Acc) ->
+do_parse_cells([Contents], Acc, Ann) ->
 	%% @todo Annotations.
-	lists:reverse([{cell, #{specifiers => <<>>}, Contents, #{}}|Acc]);
+	lists:reverse([{cell, #{specifiers => <<>>}, Contents, Ann}|Acc]);
 %% Last cell. There are no further cell specifiers.
-do_parse_cells([Specs, Contents0], Acc) ->
-	Contents = asciideck_block_parser:parse(Contents0),
+do_parse_cells([Specs, Contents0], Acc, Ann) ->
+	Contents = asciideck_block_parser:parse(Contents0, Ann),
 	%% @todo Annotations.
-	Cell = {cell, #{specifiers => Specs}, Contents, #{}},
+	Cell = {cell, #{specifiers => Specs}, Contents, Ann},
 	lists:reverse([Cell|Acc]);
 %% If there are cell specifiers we need to extract them from the cell
 %% contents. Cell specifiers are everything from the last whitespace
 %% until the end of the binary.
-do_parse_cells([Specs, Contents0|Tail], Acc) ->
+do_parse_cells([Specs, Contents0|Tail], Acc, Ann) ->
 	NextSpecs = <<>>, %% @todo find_r(Contents0, <<>>),
 	Len = byte_size(Contents0) - byte_size(NextSpecs),
 	<<Contents1:Len/binary, _/bits>> = Contents0,
-	Contents = asciideck_block_parser:parse(Contents1),
+	Contents = asciideck_block_parser:parse(Contents1, Ann),
 	%% @todo Annotations.
-	Cell = {cell, #{specifiers => Specs}, Contents, #{}},
-	do_parse_cells([NextSpecs|Tail], [Cell|Acc]).
+	Cell = {cell, #{specifiers => Specs}, Contents, Ann},
+	do_parse_cells([NextSpecs|Tail], [Cell|Acc], Ann).
 
 %% @todo This is not correct. Not all remaining data is specifiers.
 %% In addition, for columns at the end of the line this doesn't apply.
@@ -269,52 +328,49 @@ do_parse_cells([Specs, Contents0|Tail], Acc) ->
 
 -ifdef(TEST).
 parse_table_test() ->
-	{[
-		{cell, _, [{paragraph, _, <<"1">>, _}], _},
-		{cell, _, [{paragraph, _, <<"2">>, _}], _},
-		{cell, _, [{paragraph, _, <<"A">>, _}], _},
-		{cell, _, [{paragraph, _, <<"3">>, _}], _},
-		{cell, _, [{paragraph, _, <<"4">>, _}], _},
-		{cell, _, [{paragraph, _, <<"B">>, _}], _},
-		{cell, _, [{paragraph, _, <<"5">>, _}], _},
-		{cell, _, [{paragraph, _, <<"6">>, _}], _},
-		{cell, _, [{paragraph, _, <<"C">>, _}], _}
-	], 3} = parse_table(<<
-		"|1 |2 |A\n"
-		"|3 |4 |B\n"
-		"|5 |6 |C">>, #{}),
-	ok.
+	?assertMatch({[
+			{cell, _, [{paragraph, _, [{<<"1">>,_}], _}], #{line := 2}},
+			{cell, _, [{paragraph, _, [{<<"2">>,_}], _}], #{line := 2}},
+			{cell, _, [{paragraph, _, [{<<"A">>,_}], _}], #{line := 2}},
+			{cell, _, [{paragraph, _, [{<<"3">>,_}], _}], #{line := 3}},
+			{cell, _, [{paragraph, _, [{<<"4">>,_}], _}], #{line := 3}},
+			{cell, _, [{paragraph, _, [{<<"B">>,_}], _}], #{line := 3}},
+			{cell, _, [{paragraph, _, [{<<"5">>,_}], _}], #{line := 4}},
+			{cell, _, [{paragraph, _, [{<<"6">>,_}], _}], #{line := 4}},
+			{cell, _, [{paragraph, _, [{<<"C">>,_}], _}], #{line := 4}}
+		], 3},
+		parse_table([{<<"|1 |2 |A">>,#{line=>2}},{<<"|3 |4 |B">>,#{line=>3}},{<<"|5 |6 |C">>,#{line=>4}}], #{}, #{})
+	).
 
 parse_table_escape_pipe_test() ->
 	{[
-		{cell, _, [{paragraph, _, <<"1">>, _}], _},
-		{cell, _, [{paragraph, _, <<"2">>, _}], _},
-		{cell, _, [{paragraph, _, <<"3 |4">>, _}], _},
-		{cell, _, [{paragraph, _, <<"5">>, _}], _}
-	], 2} = parse_table(<<
-		"|1 |2\n"
-		"|3 \\|4 |5">>, #{}),
-	ok.
+		{cell, _, [{paragraph, _, [{<<"1">>,_}], _}], _},
+		{cell, _, [{paragraph, _, [{<<"2">>,_}], _}], _},
+		{cell, _, [{paragraph, _, [{<<"3 |4">>,_}], _}], _},
+		{cell, _, [{paragraph, _, [{<<"5">>,_}], _}], _}
+	], 2} = parse_table([{<<"|1 |2">>,#{line=>2}},{<<"|3 \\|4 |5">>,#{line=>3}}], #{}, #{}).
 -endif.
 
 %% @todo We currently don't handle colspans and rowspans.
-rows(Cells, NumCols) ->
-	rows(Cells, [], NumCols, [], NumCols).
+rows(Cells, NumCols, Ann) ->
+	rows(Cells, [], NumCols, [], NumCols, Ann).
 
 %% End of row.
-rows(Tail, Acc, NumCols, RowAcc, CurCol) when CurCol =< 0 ->
+rows(Tail, Acc, NumCols, RowAcc, CurCol, _) when CurCol =< 0 ->
 	%% @todo Annotations.
-	Row = {row, #{}, lists:reverse(RowAcc), #{}},
-	rows(Tail, [Row|Acc], NumCols, [], NumCols);
+	Cells = lists:reverse(RowAcc),
+	[{cell, _, _, Ann}|_] = Cells,
+	Row = {row, #{}, Cells, Ann},
+	rows(Tail, [Row|Acc], NumCols, [], NumCols, Ann);
 %% Add a cell to the row.
-rows([Cell|Tail], Acc, NumCols, RowAcc, CurCol) ->
-	rows(Tail, Acc, NumCols, [Cell|RowAcc], CurCol - 1);
+rows([Cell|Tail], Acc, NumCols, RowAcc, CurCol, Ann) ->
+	rows(Tail, Acc, NumCols, [Cell|RowAcc], CurCol - 1, Ann);
 %% End of a properly formed table.
-rows([], Acc, _, [], _) ->
+rows([], Acc, _, [], _, _) ->
 	lists:reverse(Acc);
 %% Malformed table. Even if we expect more columns,
 %% if there are no more cells there's nothing we can do.
-rows([], Acc, _, RowAcc, _) ->
+rows([], Acc, _, RowAcc, _, Ann) ->
 	%% @todo Annotations.
-	Row = {row, #{}, lists:reverse(RowAcc), #{}},
+	Row = {row, #{}, lists:reverse(RowAcc), Ann},
 	lists:reverse([Row|Acc]).

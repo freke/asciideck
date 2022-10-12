@@ -24,7 +24,7 @@
 
 run([]) ->
 	[];
-run([Data|Tail]) when is_binary(Data) ->
+run([{Data,_Ann}|Tail]) when is_binary(Data) ->
 	[inline(Data)|run(Tail)];
 %% We do not do any inline formatting for verbatim blocks,
 %% for example listing blocks.

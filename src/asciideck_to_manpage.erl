@@ -86,9 +86,9 @@ ast_node(Node={Type, _, _, _}) ->
 				io:format("Ignored AST node ~p~n", [Node]),
 				[]
 		end
-	catch C:E ->
+	catch C:E:S ->
 		io:format("Ignored AST node ~p~nReason: ~p:~p~nStacktrace: ~p~n",
-			[Node, C, E, erlang:get_stacktrace()]),
+			[Node, C, E, S]),
 		[]
 	end.
 
